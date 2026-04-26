@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+qdrant_storage/
+qdrant_test/
+data/
+*.pdf
+*.csv
+*.xlsx
+.vscode/
+.cache/
+*.pt
+*.safetensors
+venv/
+
