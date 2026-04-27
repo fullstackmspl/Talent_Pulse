@@ -42,6 +42,9 @@ export default function Dashboard() {
     const [fileToDelete, setFileToDelete] = useState<string | null>(null);
     const [showChatDeleteConfirm, setShowChatDeleteConfirm] = useState(false);
     const [chatToDelete, setChatToDelete] = useState<string | null>(null);
+    const [showSettings, setShowSettings] = useState(false);
+    const [groqKey, setGroqKey] = useState('');
+    const [geminiKey, setGeminiKey] = useState('');
 
     // New State for Features
     const [linkInput, setLinkInput] = useState('');
@@ -92,6 +95,35 @@ export default function Dashboard() {
         setTheme(newTheme);
         document.documentElement.setAttribute('data-theme', newTheme);
         localStorage.setItem('talentpulse_theme', newTheme);
+    };
+
+    const handleUpdateKeys = async () => {
+        if (!groqKey && !geminiKey) {
+            toast.error("Please enter at least one API key.");
+            return;
+        }
+
+        const toastId = toast.loading("Updating secure protocols...");
+        const token = localStorage.getItem('talent_pulse_token');
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+        try {
+            const res = await axios.post(`${API_BASE}/config/api-keys`, {
+                groq_api_key: groqKey,
+                gemini_api_key: geminiKey
+            }, { headers });
+
+            if (res.data.status === 'success') {
+                toast.success("AI Protocols Updated Successfully", { id: toastId });
+                setGroqKey('');
+                setGeminiKey('');
+                setShowSettings(false);
+            } else {
+                toast.error(res.data.message, { id: toastId });
+            }
+        } catch (e: any) {
+            toast.error("Protocol update failed. Verify authentication.", { id: toastId });
+        }
     };
 
     useEffect(() => {
@@ -541,6 +573,73 @@ export default function Dashboard() {
                         </motion.div>
                     </motion.div>
                 )}
+
+                {showSettings && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-4"
+                        onClick={() => setShowSettings(false)}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.9, y: 20 }}
+                            animate={{ scale: 1, y: 0 }}
+                            className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-[2.5rem] p-10 max-w-lg w-full shadow-2xl relative overflow-hidden"
+                            onClick={e => e.stopPropagation()}
+                        >
+                            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-cyan-500 to-blue-600" />
+
+                            <div className="flex items-center gap-4 mb-8">
+                                <div className="w-12 h-12 rounded-2xl bg-cyan-500/10 flex items-center justify-center text-cyan-500">
+                                    <Settings size={24} />
+                                </div>
+                                <div>
+                                    <h2 className="text-xl font-black uppercase italic tracking-tight">AI PROTOCOLS</h2>
+                                    <p className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-widest">Configure API Engine Access</p>
+                                </div>
+                            </div>
+
+                            <div className="space-y-6 mb-10">
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-black text-cyan-500 uppercase tracking-widest ml-1">Groq API Key (URL Brain)</label>
+                                    <input 
+                                        type="password"
+                                        value={groqKey}
+                                        onChange={(e) => setGroqKey(e.target.value)}
+                                        placeholder="gsk_..."
+                                        className="w-full bg-[var(--sidebar-bg)] border border-[var(--border-color)] rounded-2xl p-4 text-xs font-bold focus:outline-none focus:border-cyan-500 transition-all"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-black text-blue-500 uppercase tracking-widest ml-1">Gemini API Key (File Brain)</label>
+                                    <input 
+                                        type="password"
+                                        value={geminiKey}
+                                        onChange={(e) => setGeminiKey(e.target.value)}
+                                        placeholder="AIza..."
+                                        className="w-full bg-[var(--sidebar-bg)] border border-[var(--border-color)] rounded-2xl p-4 text-xs font-bold focus:outline-none focus:border-blue-500 transition-all"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => setShowSettings(false)}
+                                    className="flex-1 py-4 rounded-2xl bg-[var(--sidebar-bg)] hover:bg-[var(--border-color)] text-[10px] font-black uppercase text-[var(--text-muted)] transition-all border border-[var(--border-color)]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleUpdateKeys}
+                                    className="flex-1 py-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-black uppercase text-[10px] tracking-widest shadow-lg hover:scale-[1.02] active:scale-95 transition-all"
+                                >
+                                    Update Protocols
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
             </AnimatePresence>
 
             {/* Sidebar */}
@@ -627,6 +726,9 @@ export default function Dashboard() {
                 <div className="p-4 border-t border-[var(--border-color)] space-y-2">
                     <button onClick={() => setShowShortcuts(true)} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-[var(--border-color)] text-[10px] font-black uppercase text-[var(--text-muted)] hover:text-[var(--foreground)] transition-all">
                         <Command size={14} /> Shortcuts
+                    </button>
+                    <button onClick={() => setShowSettings(true)} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-cyan-500/10 text-[10px] font-black uppercase text-[var(--text-muted)] hover:text-cyan-500 transition-all italic tracking-widest">
+                        <Settings size={14} /> AI Settings
                     </button>
                     <button onClick={handleLogout} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-red-500/10 text-[10px] font-black uppercase text-red-500/60 hover:text-red-500 transition-all italic tracking-widest">
                         <X size={14} /> System Exit

@@ -11,6 +11,12 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 
 client = genai.Client(api_key=API_KEY)
 
+def update_resume_keys():
+    global client, API_KEY
+    API_KEY = os.getenv("GEMINI_API_KEY")
+    client = genai.Client(api_key=API_KEY)
+    print("📄 Resume Service Hot-Reloaded with new Gemini Key.")
+
 # -----------------------------------------------------------------------------
 # 📋 Extraction Prompt
 # -----------------------------------------------------------------------------

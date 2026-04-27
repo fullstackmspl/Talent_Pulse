@@ -38,6 +38,14 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 genai_client = genai.Client(api_key=GEMINI_API_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
+def update_rag_keys():
+    global genai_client, groq_client, GEMINI_API_KEY, GROQ_API_KEY
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+    genai_client = genai.Client(api_key=GEMINI_API_KEY)
+    groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+    print("🧠 RAG Services Hot-Reloaded with new API Keys.")
+
 
 # =====================================================
 # GLOBALS

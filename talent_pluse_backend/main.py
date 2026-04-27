@@ -216,6 +216,11 @@ class PublicLeadRequest(BaseModel):
     message: str = Field(default="")
 
 
+class ConfigUpdateRequest(BaseModel):
+    groq_api_key: str = Field(default="")
+    gemini_api_key: str = Field(default="")
+
+
 # ---------------------------------------------------
 # Helpers
 # ---------------------------------------------------
@@ -523,6 +528,64 @@ async def get_tickets(user=Depends(verify_token)):
 async def get_reminders(user=Depends(verify_token)):
     data = await db_get_all_reminders()
     return ok("Reminders fetched", data)
+
+
+@api_router.post("/config/api-keys")
+async def update_api_keys(body: ConfigUpdateRequest, user=Depends(verify_token)):
+    """
+    Updates API keys in .env and reloads services.
+    """
+    try:
+        from core.rag_service import update_rag_keys
+        from core.resume_service import update_resume_keys
+        
+        # 1. Update .env file
+        env_path = ".env"
+        lines = []
+        if os.path.exists(env_path):
+            with open(env_path, "r") as f:
+                lines = f.readlines()
+        
+        new_lines = []
+        groq_found = False
+        gemini_found = False
+        
+        for line in lines:
+            if line.startswith("GROQ_API_KEY="):
+                if body.groq_api_key:
+                    new_lines.append(f"GROQ_API_KEY={body.groq_api_key}\n")
+                    groq_found = True
+                else:
+                    new_lines.append(line)
+            elif line.startswith("GEMINI_API_KEY="):
+                if body.gemini_api_key:
+                    new_lines.append(f"GEMINI_API_KEY={body.gemini_api_key}\n")
+                    gemini_found = True
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+        
+        if not groq_found and body.groq_api_key:
+            new_lines.append(f"GROQ_API_KEY={body.groq_api_key}\n")
+        if not gemini_found and body.gemini_api_key:
+            new_lines.append(f"GEMINI_API_KEY={body.gemini_api_key}\n")
+            
+        with open(env_path, "w") as f:
+            f.writelines(new_lines)
+            
+        # 2. Reload in-memory
+        if body.groq_api_key:
+            os.environ["GROQ_API_KEY(URL)"] = body.groq_api_key
+        if body.gemini_api_key:
+            os.environ["GEMINI_API_KEY(DOCUMENT)"] = body.gemini_api_key
+            
+        update_rag_keys()
+        update_resume_keys()
+        
+        return ok("API Keys updated and services reloaded.")
+    except Exception as e:
+        fail(f"Failed to update keys: {str(e)}")
 
 
 # ---------------------------------------------------
