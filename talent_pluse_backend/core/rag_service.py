@@ -194,6 +194,7 @@ def search_chunks(query: str):
 # AI ROUTER (GROQ / GEMINI)
 # =====================================================
 async def call_ai(prompt: str, force_gemini: bool = False):
+    # 1. Attempt Groq if not forced to Gemini
     if groq_client and not force_gemini:
         try:
             chat_completion = groq_client.chat.completions.create(
@@ -206,38 +207,52 @@ async def call_ai(prompt: str, force_gemini: bool = False):
             # Fallback to Gemini if Groq fails
             pass
             
-    if not GEMINI_API_KEY:
-        return "Gemini/Groq API key missing in .env"
-
-    try:
-        # Using the new genai SDK
-        response = genai_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[prompt]
-        )
-        
-        if not response or not response.text:
-            return "No answer returned from AI. Please try rephrasing or indexing the content first."
-            
-        return response.text.strip()
-
-    except Exception as e:
-        error_msg = str(e)
-        print(f"⚠️ Gemini 2.0 (RAG) Error: {error_msg}")
-        
-        # Aggressive Fallback: Try 1.5-flash-latest for ANY error
-        print("🔄 Attempting automatic fallback to gemini-1.5-flash-latest...")
+    # 2. Attempt Gemini
+    if GEMINI_API_KEY:
         try:
-            res = genai_client.models.generate_content(
-                model="gemini-1.5-flash-latest",
+            # Using the new genai SDK
+            response = genai_client.models.generate_content(
+                model=GEMINI_MODEL,
                 contents=[prompt]
             )
-            if not res or not res.text:
-                return "Gemini 1.5 also returned an empty response."
-            return res.text.strip()
-        except Exception as e2:
-            print(f"❌ Critical Failure: Both models failed. Error: {str(e2)}")
-            return f"Quota Exhausted or API Error. (Details: {str(e2)})"
+            
+            if response and response.text:
+                return response.text.strip()
+            
+            print(f"⚠️ Gemini {GEMINI_MODEL} returned empty response.")
+        except Exception as e:
+            print(f"⚠️ Gemini {GEMINI_MODEL} Error: {str(e)}")
+            # Fallback within Gemini models if possible
+            if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+                print("🔄 Gemini Quota Exhausted.")
+            
+            # Try a lighter model if the main one fails
+            if GEMINI_MODEL != "gemini-1.5-flash-latest":
+                print("🔄 Attempting automatic fallback to gemini-1.5-flash-latest...")
+                try:
+                    res = genai_client.models.generate_content(
+                        model="gemini-1.5-flash-latest",
+                        contents=[prompt]
+                    )
+                    if res and res.text:
+                        return res.text.strip()
+                except Exception as e2:
+                    print(f"⚠️ Gemini 1.5-flash fallback failed: {str(e2)}")
+
+    # 3. Final Fallback to Groq (if Gemini failed or was forced but failed)
+    if groq_client:
+        print("🔄 Critical Fallback: Gemini failed, attempting Groq as last resort...")
+        try:
+            chat_completion = groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile",
+            )
+            return chat_completion.choices[0].message.content.strip()
+        except Exception as e_final:
+            print(f"❌ All AI providers failed. Groq error: {str(e_final)}")
+
+    return "AI services are currently unavailable due to quota limits. Please try again later or check your API keys."
+
 
 
 # =====================================================
