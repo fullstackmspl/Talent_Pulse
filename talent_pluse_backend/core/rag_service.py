@@ -158,8 +158,9 @@ def search_chunks(query: str, top_k: int = 5, source_filter: str = None):
 
     q = embed_texts([query])
     
-    # Search more chunks if filtering to ensure we find enough from the specific source
-    search_k = 30 if source_filter else 10
+    # If source filtering, search the entire index to guarantee we don't miss chunks
+    # due to global low ranking, then post-filter.
+    search_k = index.ntotal if source_filter else 15
     scores, ids = index.search(q, search_k)
 
     results = []

@@ -144,7 +144,10 @@ export default function LandingPage() {
             >
               Launch Dashboard
             </button>
-            <button className="w-full sm:w-auto px-8 sm:px-12 py-5 sm:py-6 rounded-[2rem] border border-[var(--border-color)] bg-white/50 backdrop-blur-md text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em] sm:tracking-[0.3em] hover:bg-white transition-all">
+            <button
+              onClick={() => setShowJoinUs(true)}
+              className="w-full sm:w-auto px-8 sm:px-12 py-5 sm:py-6 rounded-[2rem] border border-[var(--border-color)] bg-white/50 backdrop-blur-md text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em] sm:tracking-[0.3em] hover:bg-white transition-all"
+            >
               Request Documentation
             </button>
           </div>

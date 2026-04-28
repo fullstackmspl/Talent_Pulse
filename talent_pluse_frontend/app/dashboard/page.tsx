@@ -16,6 +16,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'https://talentpulse.meande
 
 interface ChatSession {
     id: string;
+    backendSessionId?: number;
     title: string;
     messages: { role: 'user' | 'ai'; content: string; options?: string[] }[];
     timestamp: number;
@@ -26,6 +27,7 @@ export default function Dashboard() {
     const [messages, setMessages] = useState<{ role: 'user' | 'ai'; content: string; options?: string[] }[]>([]);
     const [history, setHistory] = useState<ChatSession[]>([]);
     const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+    const [currentBackendSessionId, setCurrentBackendSessionId] = useState<number | null>(null);
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
     const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -65,7 +67,16 @@ export default function Dashboard() {
         setIsLoggedIn(true);
 
         const savedHistory = localStorage.getItem('genius_history');
-        if (savedHistory) setHistory(JSON.parse(savedHistory));
+        if (savedHistory) {
+            try {
+                const parsed = JSON.parse(savedHistory);
+                if (Array.isArray(parsed)) {
+                    setHistory(parsed);
+                }
+            } catch (e) {
+                console.error("Failed to parse saved chat history", e);
+            }
+        }
 
         const savedTheme = localStorage.getItem('talentpulse_theme') as 'light' | 'dark';
         if (savedTheme) {
@@ -193,12 +204,14 @@ export default function Dashboard() {
     const startNewChat = () => {
         setMessages([]);
         setCurrentChatId(null);
+        setCurrentBackendSessionId(null);
         if (window.innerWidth < 1024) setSidebarOpen(false);
     };
 
     const loadChat = (chat: ChatSession) => {
         setMessages(chat.messages);
         setCurrentChatId(chat.id);
+        setCurrentBackendSessionId(chat.backendSessionId ?? null);
         if (window.innerWidth < 1024) setSidebarOpen(false);
     };
 
@@ -342,18 +355,30 @@ export default function Dashboard() {
         const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
         try {
-            const res = await axios.post(`${API_BASE}/chat`, { query: text }, { headers });
+            const res = await axios.post(
+                `${API_BASE}/chat`,
+                {
+                    query: text,
+                    session_id: currentBackendSessionId ?? 0,
+                },
+                { headers }
+            );
             const aiResponse = res.data.data?.response || res.data.response || res.data.message;
             const options = res.data.data?.options || res.data.options;
+            const responseSessionId = Number(res.data.data?.session_id ?? res.data.session_id ?? 0) || null;
             const finalMessages = [...newMessages, { role: 'ai' as const, content: aiResponse, options }];
 
             setLatency(Date.now() - startTime);
             setMessages(finalMessages);
+            if (responseSessionId) {
+                setCurrentBackendSessionId(responseSessionId);
+            }
 
             if (!currentChatId) {
                 const newId = Date.now().toString();
                 const newSession: ChatSession = {
                     id: newId,
+                    backendSessionId: responseSessionId ?? undefined,
                     title: text.slice(0, 30) + (text.length > 30 ? '...' : ''),
                     messages: finalMessages,
                     timestamp: Date.now()
@@ -364,7 +389,9 @@ export default function Dashboard() {
                 setCurrentChatId(newId);
             } else {
                 const updatedHistory = history.map(h =>
-                    h.id === currentChatId ? { ...h, messages: finalMessages } : h
+                    h.id === currentChatId
+                        ? { ...h, messages: finalMessages, backendSessionId: responseSessionId ?? h.backendSessionId }
+                        : h
                 );
                 setHistory(updatedHistory);
                 localStorage.setItem('genius_history', JSON.stringify(updatedHistory));
@@ -440,8 +467,8 @@ export default function Dashboard() {
                                             ) : (
                                                 <>
                                                     <Upload size={40} className="text-[var(--text-muted)] opacity-30 group-hover:text-cyan-500 group-hover:opacity-100 transition-all" />
-                                                    <span className="text-[10px] font-black uppercase text-[var(--text-muted)] group-hover:text-[var(--foreground)]">Drop PDF/CSV/Excel here</span>
-                                                    <input type="file" className="hidden" accept=".pdf,.csv,.xlsx,.xls" onChange={handleFileUpload} />
+                                                    <span className="text-[10px] font-black uppercase text-[var(--text-muted)] group-hover:text-[var(--foreground)]">Drop PDF/TXT/DOCX/CSV/Excel here</span>
+                                                    <input type="file" className="hidden" accept=".pdf,.txt,.docx,.csv,.xlsx,.xls" onChange={handleFileUpload} />
                                                 </>
                                             )}
                                         </div>

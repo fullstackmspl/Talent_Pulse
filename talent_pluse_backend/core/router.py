@@ -130,9 +130,17 @@ async def route_intent(intent: str, message: str, session_id: str = "default", a
         
     lower = message.lower().strip()
     id_match = re.search(r"#?(\d+)", message)
+    has_url = bool(re.search(r"(https?://|www\.|localhost(?::\d+)?(?:/|\b))", lower))
 
-    # 0. Question Heuristic: If it looks like a question about documents, bypass DB routing
-    question_words = ["what", "who", "where", "when", "why", "how", "show me", "can you", "list", "does", "is", "are", "find", "tell", "which", "describe"]
+    # 0. Context Lock (Active Source) Heuristic
+    if active_source:
+        # If a document is open, heavily favor RAG for all queries unless they are explicit DB commands
+        db_commands = ["save", "create", "delete", "remove", "update", "analyze", "show", "list", "clear"]
+        if not any(cmd in lower for cmd in db_commands):
+            return None # Falls back to RAG
+
+    # 1. Question Heuristic: If it looks like a question about documents, bypass DB routing
+    question_words = ["what", "who", "where", "when", "why", "how", "show me", "can you", "does", "is", "are", "find", "tell", "which", "describe"]
     if any(lower.startswith(q) for q in question_words) or lower.endswith("?"):
         # Special case: Keywords that strongly suggest a Document/RAG search
         rag_keywords = ["college", "school", "university", "studied", "attended", "degree", "education", 
@@ -140,20 +148,48 @@ async def route_intent(intent: str, message: str, session_id: str = "default", a
         
         if any(word in lower for word in rag_keywords):
             return None # Falls back to RAG
-            
-        # If we have a context lock (active_source), assume it's a RAG question
-        if active_source:
-             if not any(cmd in lower for cmd in ["save", "create", "delete", "remove", "update", "analyze"]):
-                return None # Falls back to RAG
+
+    # URL questions should prefer document/RAG answers, not CRM ticket creation.
+    url_question_terms = [
+        "summarize", "summary", "key points", "main heading",
+        "main topic", "what is", "tell me", "list"
+    ]
+    support_ticket_terms = ["ticket", "bug", "issue", "support", "crash", "not working"]
+    looks_like_url_question = has_url and (
+        any(lower.startswith(q) for q in question_words)
+        or lower.endswith("?")
+        or any(term in lower for term in url_question_terms)
+    )
+    if looks_like_url_question and not any(term in lower for term in support_ticket_terms):
+        return None
     
     # 0. Heuristic Overrides for Direct Commands (Bypass model if obvious)
-    if "delete" in lower or "remove" in lower or "erase" in lower:
+    if lower in ["delete", "remove", "erase"]:
+        intent = "delete_wizard"
+    elif lower in ["update", "edit", "change"]:
+        intent = "update_wizard"
+    elif "delete" in lower or "remove" in lower or "erase" in lower:
         if "lead" in lower: intent = "delete_lead"
         elif "candidate" in lower: intent = "delete_candidate"
         elif "ticket" in lower: intent = "delete_ticket"
         elif id_match and intent not in ["delete_lead", "delete_candidate", "delete_ticket"]:
              # If just "delete #2", we'll use the wizard to be safe, or default to lead
-             pass 
+             intent = "delete_wizard" 
+    elif intent in ["delete_lead", "delete_candidate", "delete_ticket"]:
+        # Safety check: If model predicted delete, but user didn't use a delete word, 
+        # and this isn't a forced intent from a session (which we handle later),
+        # downgrade to a safe intent
+        pass # Wait, we handle sessions later, so we can't downgrade here without breaking wizard.
+             # Actually, we CAN check session here!
+        if session_id not in SESSIONS and not any(w in lower for w in ["delete", "remove", "erase", "trash", "clear"]):
+            if "lead" in intent: intent = "lead_get"
+            elif "candidate" in intent: intent = "candidate_get"
+            elif "ticket" in intent: intent = "ticket_get"
+
+    if any(word in lower for word in ["update", "change", "set", "move"]) and "lead" in lower:
+        intent = "update_lead"
+    elif any(word in lower for word in ["update", "change", "set", "move"]) and "candidate" in lower:
+        intent = "update_candidate"
 
     # 0.5. Lead Report Heuristics
     if "conversion rate" in lower or "converted rate" in lower or "conversion %" in lower:
@@ -181,10 +217,29 @@ async def route_intent(intent: str, message: str, session_id: str = "default", a
         elif "applied" in lower: intent = "candidate_report_applied"
 
     # 0.6. Heuristic Override for Resume Uploads/Analysis
-    # Avoid triggering analyze_resume if the user is asking a question about a file.
-    is_question = any(word in lower.split() for word in ["what", "who", "when", "where", "how", "why", "can", "is", "explain"])
-    if not is_question and (re.search(r"\.(pdf|jpg|jpeg|png)", lower) or ("upload" in lower and "resume" in lower) or lower == "analyze old resume"):
+    # Only trigger resume analysis for explicit analysis/upload commands.
+    # Questions that mention PDF names should go through RAG QA instead.
+    resume_file_mentioned = bool(re.search(r"\.(pdf|jpg|jpeg|png)", lower))
+    question_like = (
+        any(lower.startswith(q) for q in question_words)
+        or lower.endswith("?")
+        or any(term in lower for term in ["summarize", "summary", "top skills", "key points", "tell me", "list"])
+    )
+    explicit_resume_action = (
+        ("resume" in lower and any(v in lower for v in ["upload", "analyze", "parse", "extract", "process"]))
+        or lower == "analyze old resume"
+    )
+    if "analyze old resume" in lower:
+        intent = "analyze_old_resume"
+    elif explicit_resume_action and not question_like:
         intent = "analyze_resume"
+    elif resume_file_mentioned and ("resume" in lower) and any(v in lower for v in ["upload", "analyze", "parse", "extract"]) and not question_like:
+        intent = "analyze_resume"
+
+    # If the model predicts resume analysis but user is clearly asking a question
+    # about an already indexed file, route to RAG QA instead.
+    if intent == "analyze_resume" and resume_file_mentioned and question_like:
+        return None
 
 
     # 1. Check for Global Exit/Cancel Keywords
@@ -197,6 +252,21 @@ async def route_intent(intent: str, message: str, session_id: str = "default", a
     # 2. Check for active session
     session = SESSIONS.get(session_id)
     if session:
+        # Allow explicit new commands to break out of a stale in-progress session.
+        new_command_prefixes = (
+            "create ", "add ", "update ", "delete ", "remove ",
+            "show ", "list ", "what ", "who ", "where ", "when ",
+            "why ", "how ", "analyze ", "summarize ", "from "
+        )
+        session_type = session.get("type", "")
+        same_flow = (
+            session_type == intent
+            or (session_type == "create_candidate" and intent == "candidate_create")
+        )
+        if any(lower.startswith(p) for p in new_command_prefixes) and not same_flow:
+            del SESSIONS[session_id]
+            return await route_intent(intent, message, session_id, active_source=active_source, api_key=api_key)
+
         # Handle Search Type Clarification (Lead vs Candidate)
         if session["type"] == "clarify_search_type":
             choice = message.lower()
@@ -210,6 +280,23 @@ async def route_intent(intent: str, message: str, session_id: str = "default", a
             else:
                 return {
                     "message": f"I found results for '{name}' in both Leads and Candidates. Which one should I open?",
+                    "options": ["Lead", "Candidate"]
+                }
+
+        # Handle Update Type Clarification
+        if session["type"] == "clarify_update_type":
+            choice = message.lower()
+            if "lead" in choice:
+                session["type"] = "update_lead"
+                session["initial_msg"] = "update"
+                return {"message": "Which lead would you like to update? Please provide Name, ID (#), or Email."}
+            elif "candidate" in choice:
+                session["type"] = "update_candidate"
+                session["initial_msg"] = "update"
+                return {"message": "Which candidate would you like to update? Please provide Name, ID (#), or Email."}
+            else:
+                return {
+                    "message": "What would you like to update: a Lead or a Candidate?",
                     "options": ["Lead", "Candidate"]
                 }
 
@@ -514,32 +601,44 @@ async def route_intent(intent: str, message: str, session_id: str = "default", a
             # 2. FIELD SELECTION STAGE
             if not session.get("field"):
                 # Check current message first (for menu clicks)
-                current_msg = message.lower()
+                current_msg = message.lower().strip()
                 detected_field = None
-                for f in ["name", "email", "phone", "status", "company", "role"]:
-                    if f in current_msg: 
-                        detected_field = "position_applied" if f == "role" else f
+                selected_alias = None
+                field_aliases = [
+                    ("name", "name"),
+                    ("email", "email"),
+                    ("phone", "phone"),
+                    ("status", "status"),
+                    ("company", "company"),
+                    ("role", "position_applied"),
+                    ("position", "position_applied"),
+                ]
+                for alias, mapped in field_aliases:
+                    if re.search(rf"\b{re.escape(alias)}\b", current_msg):
+                        detected_field = mapped
+                        selected_alias = alias
                         break
                 
                 # If still nothing, check initial message (for shortcut commands)
                 if not detected_field:
                     msg_low = session["initial_msg"].lower()
-                    for f in ["name", "email", "phone", "status", "company", "role"]:
-                        if f in msg_low: 
-                            detected_field = "position_applied" if f == "role" else f
+                    for alias, mapped in field_aliases:
+                        if re.search(rf"\b{re.escape(alias)}\b", msg_low):
+                            detected_field = mapped
                             break
                 
                 if detected_field:
                     session["field"] = detected_field
                     # If the field was just selected from a menu click, ask for the value
-                    if detected_field.lower() in message.lower():
+                    if selected_alias:
                         if detected_field == "status":
                              opts = ["New", "Contacted", "Qualified", "Converted", "Lost"] if is_lead else ["Applied", "Screening", "Interview", "Offered", "Hired", "Rejected"]
                              return {
                                 "message": f"Please select the new status for {session['current_data']['name']}:",
                                 "options": opts
                              }
-                        return {"message": f"What is the new {detected_field.replace('_', ' ')} for {session['current_data']['name']}?"}
+                        human_field = "role" if detected_field == "position_applied" else detected_field.replace("_", " ")
+                        return {"message": f"What is the new {human_field} for {session['current_data']['name']}?"}
                 else:
                     opts = ["Name", "Email", "Phone", "Status", ("Company" if is_lead else "Role")]
                     return {
@@ -614,6 +713,7 @@ async def route_intent(intent: str, message: str, session_id: str = "default", a
 
             # Generic Field Update
             val = message.strip()
+            lower_val = val.lower()
             
             # Basic Validation to prevent IDs/invalid data being saved
             if session["field"] == "email" and ("@" not in val or "." not in val):
@@ -622,13 +722,19 @@ async def route_intent(intent: str, message: str, session_id: str = "default", a
                 clean_phone = "".join(filter(str.isdigit, val))
                 if len(clean_phone) < 10:
                     return {"message": f"'{val}' is not a valid 10-digit phone number. Please try again."}
+            if session["field"] == "position_applied":
+                if lower_val in {"role", "position", "position applied", "position_applied"}:
+                    return {"message": f"Please provide the new role/title for {session['current_data']['name']} (example: Data Analyst)."}
+                if len(val) < 2:
+                    return {"message": f"Please provide a valid role/title for {session['current_data']['name']}."}
 
             from core.db_service import db_update_lead, db_update_candidate
             if is_lead: await db_update_lead(session["target_id"], {session["field"]: val})
             else: await db_update_candidate(session["target_id"], {session["field"]: val})
             
             del SESSIONS[session_id]
-            return {"message": f"✅ {session['field'].replace('_', ' ').capitalize()} updated successfully to: {val}"}
+            success_label = "Role" if session["field"] == "position_applied" else session["field"].replace("_", " ").capitalize()
+            return {"message": f"{success_label} updated successfully to: {val}"}
 
         if session["type"] == "clarify_lead_get":
             # User is providing ID or Email for a previous search
@@ -800,36 +906,26 @@ async def route_intent(intent: str, message: str, session_id: str = "default", a
 
     if intent == "update_lead":
         SESSIONS[session_id] = {"type": "update_lead", "initial_msg": message}
+        # If user already provided ID/email/phone in the same command,
+        # continue immediately instead of asking for the identifier again.
+        if re.search(r"#?(\d+)", message) or extract_email(message) or extract_phone(message):
+            return await route_intent(intent, message, session_id, active_source=active_source, api_key=api_key)
         return {"message": "Which lead do you want to update? Please provide ID, Email, or 10-digit Phone."}
 
     if intent == "update_candidate":
         SESSIONS[session_id] = {"type": "update_candidate", "initial_msg": message}
+        # If user already provided ID/email/name in the same command,
+        # continue immediately instead of asking for the identifier again.
+        if re.search(r"#?(\d+)", message) or extract_email(message) or extract_name(message):
+            return await route_intent(intent, message, session_id, active_source=active_source, api_key=api_key)
         return {"message": "Which candidate would you like to update? Please provide Name, ID (#), or Email."}
 
-    if intent == "delete_lead":
-        id_match = re.search(r"#?(\d+)", message)
-        email = extract_email(message)
-        phone = extract_phone(message)
-        target_id = None
-        
-        from management.models import Lead
-        from asgiref.sync import sync_to_async
-        if id_match: target_id = int(id_match.group(1))
-        elif email:
-            target = await sync_to_async(lambda: Lead.objects.filter(email=email).first())()
-            if target: target_id = target.id
-        elif phone:
-            target = await sync_to_async(lambda: Lead.objects.filter(phone__icontains=phone).first())()
-            if target: target_id = target.id
-
-        if not target_id:
-            return {"message": "Lead not found. Please provide valid ID, Email, or Phone."}
-
-        from core.db_service import db_delete_lead
-        await db_delete_lead(target_id)
-        return {"message": f"🗑️ Lead #{target_id} has been permanently deleted."}
-
-    # -----------------------------------------
+    if intent == "update_wizard":
+        SESSIONS[session_id] = {"type": "clarify_update_type", "initial_msg": message}
+        return {
+            "message": "What would you like to update: a Lead or a Candidate?",
+            "options": ["Lead", "Candidate"]
+        }    # -----------------------------------------
     # Create Candidate
     # -----------------------------------------
     if intent == "create_candidate" or intent == "candidate_create":
@@ -1310,8 +1406,11 @@ async def route_intent(intent: str, message: str, session_id: str = "default", a
             return {"message": "Lead not found. Please provide a valid ID (#), Email, or Name to delete."}
 
         from core.db_service import db_delete_lead
-        await db_delete_lead(target_id)
-        return {"message": f"🗑️ Lead #{target_id} has been permanently deleted."}
+        deleted = await db_delete_lead(target_id)
+        if deleted:
+            return {"message": f"🗑️ Lead #{target_id} has been permanently deleted."}
+        else:
+            return {"message": f"#{target_id} no id found"}
 
     if intent == "delete_candidate":
         id_match = re.search(r"#?(\d+)", message)
@@ -1338,8 +1437,11 @@ async def route_intent(intent: str, message: str, session_id: str = "default", a
             return {"message": "Candidate not found. Please provide a valid ID (#), Email, or Name to delete."}
 
         from core.db_service import db_delete_candidate
-        await db_delete_candidate(target_id)
-        return {"message": f"🗑️ Candidate #{target_id} has been permanently removed."}
+        deleted = await db_delete_candidate(target_id)
+        if deleted:
+            return {"message": f"🗑️ Candidate #{target_id} has been permanently removed."}
+        else:
+            return {"message": f"#{target_id} no id found"}
 
     if intent == "delete_ticket":
         id_match = re.search(r"#?(\d+)", message)

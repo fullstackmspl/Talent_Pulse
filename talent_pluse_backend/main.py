@@ -322,7 +322,9 @@ async def upload_file(
         ".pdf",
         ".txt",
         ".docx",
-        ".csv"
+        ".csv",
+        ".xlsx",
+        ".xls",
     ]
 
     if ext not in allowed:
@@ -488,7 +490,9 @@ async def chat(
     await db_add_chat_message(chat_session_id, "user", body.query)
 
     # 2. Attempt intent detection and routing
-    session_id_str = user.get("sub", "default")
+    # Scope interactive intent sessions to the concrete chat session so one
+    # in-progress flow does not leak across all chats for the same user.
+    session_id_str = f"{user.get('sub', 'default')}::{chat_session_id}"
     try:
         intent, conf = predict_intent_with_confidence(body.query)
         route_data = await route_intent(intent, body.query, session_id=session_id_str, active_source=active_source, api_key=body.groq_api_key)
