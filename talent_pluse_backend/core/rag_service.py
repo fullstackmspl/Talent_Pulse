@@ -194,11 +194,7 @@ def search_chunks(query: str):
 # AI ROUTER (GROQ / GEMINI)
 # =====================================================
 async def call_ai(prompt: str, force_gemini: bool = False):
-    """
-    Exclusively uses Groq for AI responses.
-    Gemini has been removed as per user request.
-    """
-    if groq_client:
+    if groq_client and not force_gemini:
         try:
             chat_completion = groq_client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
@@ -207,10 +203,41 @@ async def call_ai(prompt: str, force_gemini: bool = False):
             return chat_completion.choices[0].message.content.strip()
         except Exception as e:
             print(f"⚠️ Groq Error: {str(e)}")
-            return f"Groq API Error: {str(e)}"
+            # Fallback to Gemini if Groq fails
+            pass
             
-    return "Groq API key missing in .env"
+    if not GEMINI_API_KEY:
+        return "Gemini/Groq API key missing in .env"
 
+    try:
+        # Using the new genai SDK
+        response = genai_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[prompt]
+        )
+        
+        if not response or not response.text:
+            return "No answer returned from AI. Please try rephrasing or indexing the content first."
+            
+        return response.text.strip()
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"⚠️ Gemini 2.0 (RAG) Error: {error_msg}")
+        
+        # Aggressive Fallback: Try 1.5-flash-latest for ANY error
+        print("🔄 Attempting automatic fallback to gemini-1.5-flash-latest...")
+        try:
+            res = genai_client.models.generate_content(
+                model="gemini-1.5-flash-latest",
+                contents=[prompt]
+            )
+            if not res or not res.text:
+                return "Gemini 1.5 also returned an empty response."
+            return res.text.strip()
+        except Exception as e2:
+            print(f"❌ Critical Failure: Both models failed. Error: {str(e2)}")
+            return f"Quota Exhausted or API Error. (Details: {str(e2)})"
 
 
 # =====================================================
