@@ -124,7 +124,7 @@ def parse_due_date(text: str):
 SESSIONS = {}
 
 
-async def route_intent(intent: str, message: str, session_id: str = "default"):
+async def route_intent(intent: str, message: str, session_id: str = "default", active_source: str = None, api_key: str = None):
     if not message:
         return {"message": "I didn't receive any text. How can I help you?"}
         
@@ -132,11 +132,18 @@ async def route_intent(intent: str, message: str, session_id: str = "default"):
     id_match = re.search(r"#?(\d+)", message)
 
     # 0. Question Heuristic: If it looks like a question about documents, bypass DB routing
-    question_words = ["what", "who", "where", "when", "why", "how", "show me", "can you", "list", "does", "is", "are", "find", "tell"]
+    question_words = ["what", "who", "where", "when", "why", "how", "show me", "can you", "list", "does", "is", "are", "find", "tell", "which", "describe"]
     if any(lower.startswith(q) for q in question_words) or lower.endswith("?"):
-        # Bypass if it mentions "resume", "file", "document" or doesn't look like a clear data command
-        if any(word in lower for word in ["resume", "file", "document", "in", "from"]):
-            if not any(cmd in lower for cmd in ["save", "create", "delete", "remove", "update"]):
+        # Special case: Keywords that strongly suggest a Document/RAG search
+        rag_keywords = ["college", "school", "university", "studied", "attended", "degree", "education", 
+                        "resume", "file", "document", "skills", "coding", "language", "experience", "work"]
+        
+        if any(word in lower for word in rag_keywords):
+            return None # Falls back to RAG
+            
+        # If we have a context lock (active_source), assume it's a RAG question
+        if active_source:
+             if not any(cmd in lower for cmd in ["save", "create", "delete", "remove", "update", "analyze"]):
                 return None # Falls back to RAG
     
     # 0. Heuristic Overrides for Direct Commands (Bypass model if obvious)

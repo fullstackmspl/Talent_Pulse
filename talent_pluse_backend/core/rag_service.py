@@ -7,7 +7,6 @@ import faiss
 import numpy as np
 import httpx
 from sentence_transformers import SentenceTransformer
-from google import genai # Kept as requested
 from groq import Groq
 
 from core.document_processor import process_file_bytes, process_web_url
@@ -26,23 +25,14 @@ EMBED_MODEL = os.getenv(
 TOP_K = int(os.getenv("TOP_K", "8"))
 THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.45"))
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv(
-    "GEMINI_MODEL",
-    "gemini-2.0-flash" # Updated Model
-)
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 # Initialize Client
-genai_client = genai.Client(api_key=GEMINI_API_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 def update_rag_keys():
-    global genai_client, groq_client, GEMINI_API_KEY, GROQ_API_KEY
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    global groq_client, GROQ_API_KEY
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-    genai_client = genai.Client(api_key=GEMINI_API_KEY)
     groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
     print("🧠 RAG Services Hot-Reloaded with new API Keys.")
 
@@ -162,13 +152,15 @@ async def add_chunks(chunks: List[str], source: str, path: str = None):
 # =====================================================
 # SEARCH
 # =====================================================
-def search_chunks(query: str):
+def search_chunks(query: str, top_k: int = 5, source_filter: str = None):
     if index.ntotal == 0:
         return []
 
     q = embed_texts([query])
-
-    scores, ids = index.search(q, TOP_K)
+    
+    # Search more chunks if filtering to ensure we find enough from the specific source
+    search_k = 30 if source_filter else 10
+    scores, ids = index.search(q, search_k)
 
     results = []
 
@@ -176,16 +168,23 @@ def search_chunks(query: str):
         if idx == -1:
             continue
 
-        if float(score) < THRESHOLD:
+        item = metadata[idx]
+        
+        # Apply strict source filter if provided
+        if source_filter and item["source"] != source_filter:
             continue
 
-        item = metadata[idx]
+        if float(score) < 0.2 and not source_filter: # Be more lenient when filtering
+            continue
 
         results.append({
             "score": float(score),
             "source": item["source"],
             "text": item["text"]
         })
+        
+        if len(results) >= top_k: # Limit to requested top_k
+            break
 
     return results
 
@@ -193,65 +192,25 @@ def search_chunks(query: str):
 # =====================================================
 # AI ROUTER (GROQ / GEMINI)
 # =====================================================
-async def call_ai(prompt: str, force_gemini: bool = False):
-    # 1. Attempt Groq if not forced to Gemini
-    if groq_client and not force_gemini:
-        try:
-            chat_completion = groq_client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama-3.3-70b-versatile",
-            )
-            return chat_completion.choices[0].message.content.strip()
-        except Exception as e:
-            print(f"⚠️ Groq Error: {str(e)}")
-            # Fallback to Gemini if Groq fails
-            pass
-            
-    # 2. Attempt Gemini
-    if GEMINI_API_KEY:
-        try:
-            # Using the new genai SDK
-            response = genai_client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=[prompt]
-            )
-            
-            if response and response.text:
-                return response.text.strip()
-            
-            print(f"⚠️ Gemini {GEMINI_MODEL} returned empty response.")
-        except Exception as e:
-            print(f"⚠️ Gemini {GEMINI_MODEL} Error: {str(e)}")
-            # Fallback within Gemini models if possible
-            if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
-                print("🔄 Gemini Quota Exhausted.")
-            
-            # Try a lighter model if the main one fails
-            if GEMINI_MODEL != "gemini-1.5-flash-latest":
-                print("🔄 Attempting automatic fallback to gemini-1.5-flash-latest...")
-                try:
-                    res = genai_client.models.generate_content(
-                        model="gemini-1.5-flash-latest",
-                        contents=[prompt]
-                    )
-                    if res and res.text:
-                        return res.text.strip()
-                except Exception as e2:
-                    print(f"⚠️ Gemini 1.5-flash fallback failed: {str(e2)}")
+async def call_ai(prompt: str, api_key: str = None):
+    # Use dynamic key if provided
+    current_groq_client = groq_client
+    if api_key:
+        from groq import Groq
+        current_groq_client = Groq(api_key=api_key)
 
-    # 3. Final Fallback to Groq (if Gemini failed or was forced but failed)
-    if groq_client:
-        print("🔄 Critical Fallback: Gemini failed, attempting Groq as last resort...")
-        try:
-            chat_completion = groq_client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama-3.3-70b-versatile",
-            )
-            return chat_completion.choices[0].message.content.strip()
-        except Exception as e_final:
-            print(f"❌ All AI providers failed. Groq error: {str(e_final)}")
+    if not current_groq_client:
+        return "Groq API key is missing. Please enter your key to continue."
 
-    return "AI services are currently unavailable due to quota limits. Please try again later or check your API keys."
+    try:
+        chat_completion = current_groq_client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+        )
+        return chat_completion.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"⚠️ Groq Error: {str(e)}")
+        return f"Groq Error: {str(e)}"
 
 
 
@@ -271,16 +230,12 @@ def fallback_answer(matches):
 # =====================================================
 # ASK RAG
 # =====================================================
-async def ask_rag(query: str, active_source: str = None):
-    matches = search_chunks(query)
-    
-    # Context Locking Logic: 
-    # If we have an active_source, we prioritize chunks from that source
-    if active_source and matches:
-        source_matches = [m for m in matches if m["source"] == active_source]
-        other_matches = [m for m in matches if m["source"] != active_source]
-        # Put source matches at the top
-        matches = source_matches + other_matches[:3] # Keep top matches plus some context
+async def ask_rag(query: str, active_source: str = None, api_key: str = None):
+    # If we have an active source, we perform a strict search ONLY on that source
+    if active_source:
+        matches = search_chunks(query, top_k=10, source_filter=active_source)
+    else:
+        matches = search_chunks(query, top_k=5)
 
     if not matches:
         return {
@@ -324,17 +279,7 @@ QUESTION:
 ANSWER:
 """
 
-    requires_gemini = False
-    for m in matches:
-        source = m['source'].lower()
-        if source.endswith(('.pdf', '.csv', '.doc', '.docx', '.txt', '.jpg', '.jpeg', '.png')):
-            requires_gemini = True
-            break
-
-    answer = await call_ai(prompt, force_gemini=requires_gemini)
-
-    if answer.startswith("Gemini error"):
-        answer = fallback_answer(matches)
+    answer = await call_ai(prompt, api_key=api_key)
 
     return {
         "answer": answer,

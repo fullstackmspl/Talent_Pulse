@@ -147,17 +147,6 @@ ADMIN_PASSWORD = os.getenv(
     "Meander@8982"
 )
 
-# Gemini Key loaded from .env
-GEMINI_API_KEY = os.getenv(
-    "GEMINI_API_KEY",
-    ""
-)
-
-GEMINI_MODEL = os.getenv(
-    "GEMINI_MODEL",
-    "gemini-2.0-flash"
-)
-
 ADMIN_HASH = hash_password(ADMIN_PASSWORD)
 
 
@@ -203,6 +192,7 @@ class LoginRequest(BaseModel):
 class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1)
     session_id: int = Field(default=0)
+    groq_api_key: str = Field(default="") # Dynamic Key
 
 
 class UrlRequest(BaseModel):
@@ -501,7 +491,7 @@ async def chat(
     session_id_str = user.get("sub", "default")
     try:
         intent, conf = predict_intent_with_confidence(body.query)
-        route_data = await route_intent(intent, body.query, session_id=session_id_str)
+        route_data = await route_intent(intent, body.query, session_id=session_id_str, active_source=active_source, api_key=body.groq_api_key)
         
         if route_data:
             ai_resp = route_data.get("message", "Action completed.")
@@ -524,14 +514,17 @@ async def chat(
         print(f"Intent detection or routing failed: {e}")
 
     # 3. Fallback to RAG with Context Lock
-    result = await ask_rag(body.query, active_source=active_source)
+    # Pass the dynamic API key from the request
+    result = await ask_rag(body.query, active_source=active_source, api_key=body.groq_api_key)
     ai_resp = result["answer"]
     
     # 4. Update Context Lock if a source was used
     if result.get("sources") and len(result["sources"]) > 0:
-        # Extract source name
-        new_source = result["sources"][0]
-        if new_source != active_source:
+        # Extract source name string from the source object
+        first_source_obj = result["sources"][0]
+        new_source = first_source_obj.get("source") if isinstance(first_source_obj, dict) else first_source_obj
+        
+        if new_source and new_source != active_source:
             await db_update_chat_source(chat_session_id, new_source)
 
     # Save AI message
