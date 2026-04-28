@@ -130,6 +130,14 @@ async def route_intent(intent: str, message: str, session_id: str = "default"):
         
     lower = message.lower().strip()
     id_match = re.search(r"#?(\d+)", message)
+
+    # 0. Question Heuristic: If it looks like a question about documents, bypass DB routing
+    question_words = ["what", "who", "where", "when", "why", "how", "show me", "can you", "list", "does", "is", "are", "find", "tell"]
+    if any(lower.startswith(q) for q in question_words) or lower.endswith("?"):
+        # Bypass if it mentions "resume", "file", "document" or doesn't look like a clear data command
+        if any(word in lower for word in ["resume", "file", "document", "in", "from"]):
+            if not any(cmd in lower for cmd in ["save", "create", "delete", "remove", "update"]):
+                return None # Falls back to RAG
     
     # 0. Heuristic Overrides for Direct Commands (Bypass model if obvious)
     if "delete" in lower or "remove" in lower or "erase" in lower:
@@ -151,7 +159,7 @@ async def route_intent(intent: str, message: str, session_id: str = "default"):
         intent = "lead_report_converted"
     elif "show lost" in lower or "lost lead" in lower:
         intent = "lead_report_lost"
-    elif "new lead" in lower:
+    elif "new lead" in lower and not any(x in lower for x in ["create", "add", "save", "make"]):
         intent = "lead_report_new"
     elif "all lead" in lower or "total lead" in lower or "show leads" == lower:
         intent = "lead_report_total"

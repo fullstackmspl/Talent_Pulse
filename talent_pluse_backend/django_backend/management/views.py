@@ -1,25 +1,20 @@
 from rest_framework import viewsets, filters
 from rest_framework.response import Response
 from rest_framework.decorators import action
-
-from .models import Lead, Ticket, Candidate, Reminder
-<<<<<<< HEAD
-from .serializers import (
-    LeadSerializer,
-    TicketSerializer,
-    CandidateSerializer,
-    ReminderSerializer,
-)
-
-=======
-from .serializers import (LeadSerializer, TicketSerializer,
-                           CandidateSerializer, ReminderSerializer)
 import os
 import requests
 import smtplib
 import json
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
+from .models import Lead, Ticket, Candidate, Reminder
+from .serializers import (
+    LeadSerializer,
+    TicketSerializer,
+    CandidateSerializer,
+    ReminderSerializer,
+)
 
 USE_SMTP = os.getenv("USE_SMTP", "true").lower() in ("true", "1", "yes")
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
@@ -73,7 +68,6 @@ def _notify_event(payload):
         print(f"[n8n] Failed: {e}")
         return False
 
->>>>>>> 2ad24486087246661a3f83edb66384685e74dd1b
 
 # ---------------------------------------------------
 # Lead
@@ -84,30 +78,17 @@ class LeadViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ["name", "email", "company"]
 
-<<<<<<< HEAD
-=======
     def perform_create(self, serializer):
         lead = serializer.save()
-        if USE_SMTP:
-            _notify_event({
-                "event": "new_lead",
-                "id": lead.id,
-                "name": lead.name,
-                "email": lead.email,
-                "status": lead.status,
-            })
-        else:
-            try:
-                base = os.getenv("N8N_BASE_URL", "http://localhost:5678")
-                requests.post(
-                    f"{base}/{os.getenv('N8N_LEAD_WEBHOOK', 'webhook/new-lead')}",
-                    json={"id": lead.id, "name": lead.name, "email": lead.email, "status": lead.status},
-                    timeout=5,
-                )
-            except Exception as e:
-                print(f"[n8n] Failed: {e}")
+        _notify_event({
+            "event": "new_lead",
+            "id": lead.id,
+            "name": lead.name,
+            "email": lead.email,
+            "status": lead.status,
+            "webhook_path": "webhook/new-lead"
+        })
 
->>>>>>> 2ad24486087246661a3f83edb66384685e74dd1b
 
 # ---------------------------------------------------
 # Ticket
@@ -118,31 +99,18 @@ class TicketViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ["title", "issue"]
 
-<<<<<<< HEAD
-=======
     def perform_create(self, serializer):
         ticket = serializer.save()
-        if USE_SMTP:
-            _notify_event({
-                "event": "new_ticket",
-                "id": ticket.id,
-                "title": ticket.title,
-                "issue": ticket.issue,
-                "status": ticket.status,
-                "priority": ticket.priority,
-            })
-        else:
-            try:
-                base = os.getenv("N8N_BASE_URL", "http://localhost:5678")
-                requests.post(
-                    f"{base}/{os.getenv('N8N_TICKET_WEBHOOK', 'webhook/new-ticket')}",
-                    json={"id": ticket.id, "title": ticket.title, "issue": ticket.issue, "status": ticket.status, "priority": ticket.priority},
-                    timeout=5,
-                )
-            except Exception as e:
-                print(f"[n8n] Failed: {e}")
+        _notify_event({
+            "event": "new_ticket",
+            "id": ticket.id,
+            "title": ticket.title,
+            "issue": ticket.issue,
+            "status": ticket.status,
+            "priority": ticket.priority,
+            "webhook_path": "webhook/new-ticket"
+        })
 
->>>>>>> 2ad24486087246661a3f83edb66384685e74dd1b
 
 # ---------------------------------------------------
 # Candidate
@@ -153,30 +121,29 @@ class CandidateViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ["name", "email", "position_applied"]
 
-<<<<<<< HEAD
-=======
+    def perform_create(self, serializer):
+        candidate = serializer.save()
+        _notify_event({
+            "event": "new_candidate",
+            "id": candidate.id,
+            "name": candidate.name,
+            "email": candidate.email,
+            "position": candidate.position_applied,
+            "status": candidate.status,
+            "webhook_path": "webhook/new-resume"
+        })
+
     def perform_update(self, serializer):
         candidate = serializer.save()
-        if USE_SMTP:
-            _notify_event({
-                "event": "candidate_update",
-                "id": candidate.id,
-                "name": candidate.name,
-                "status": candidate.status,
-                "position": candidate.position_applied,
-            })
-        else:
-            try:
-                base = os.getenv("N8N_BASE_URL", "http://localhost:5678")
-                requests.post(
-                    f"{base}/{os.getenv('N8N_CANDIDATE_WEBHOOK', 'webhook/candidate-update')}",
-                    json={"id": candidate.id, "name": candidate.name, "status": candidate.status, "position": candidate.position_applied},
-                    timeout=5,
-                )
-            except Exception as e:
-                print(f"[n8n] Failed: {e}")
+        _notify_event({
+            "event": "candidate_update",
+            "id": candidate.id,
+            "name": candidate.name,
+            "status": candidate.status,
+            "position": candidate.position_applied,
+            "webhook_path": "webhook/candidate-update"
+        })
 
->>>>>>> 2ad24486087246661a3f83edb66384685e74dd1b
 
 # ---------------------------------------------------
 # Reminder
@@ -187,15 +154,11 @@ class ReminderViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-
         done = self.request.query_params.get("done")
-
         if done == "true":
             qs = qs.filter(is_done=True)
-
         elif done == "false":
             qs = qs.filter(is_done=False)
-
         return qs
 
     @action(detail=False, methods=["get"])

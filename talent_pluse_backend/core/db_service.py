@@ -1,5 +1,5 @@
 from asgiref.sync import sync_to_async
-from management.models import Lead, Ticket, Candidate, Reminder, CandidateStatusHistory, Employee
+from management.models import Lead, Ticket, Candidate, Reminder, CandidateStatusHistory, Employee, ChatSession, ChatMessage
 
 
 # ==================================================
@@ -99,6 +99,11 @@ def db_get_all_candidates(skip: int = 0, limit: int = 50):
 @sync_to_async
 def db_get_candidates_count():
     return Candidate.objects.count()
+
+
+@sync_to_async
+def db_get_candidate_by_email(email: str):
+    return Candidate.objects.filter(email__iexact=email).values().first()
 
 
 @sync_to_async
@@ -258,3 +263,46 @@ def db_search_by_name(query: str):
         "candidates": candidates,
         "total": len(leads) + len(candidates)
     }
+
+# ==================================================
+# CHAT PERSISTENCE
+# ==================================================
+@sync_to_async
+def db_get_chat_session(session_id: int):
+    return ChatSession.objects.filter(id=session_id).values().first()
+
+
+@sync_to_async
+def db_create_chat_session(user_email: str, title: str = "New Conversation"):
+    obj = ChatSession.objects.create(user_email=user_email, title=title)
+    return {"id": obj.id, "title": obj.title, "user_email": obj.user_email, "active_source": obj.active_source}
+
+@sync_to_async
+def db_update_chat_source(session_id: int, source: str):
+    ChatSession.objects.filter(id=session_id).update(active_source=source)
+    return True
+
+@sync_to_async
+def db_add_chat_message(session_id: int, role: str, content: str):
+    obj = ChatMessage.objects.create(session_id=session_id, role=role, content=content)
+    return {"id": obj.id, "role": obj.role, "content": obj.content, "timestamp": obj.timestamp.isoformat()}
+
+@sync_to_async
+def db_get_user_chats(user_email: str):
+    qs = ChatSession.objects.filter(user_email=user_email).order_by("-updated_at")
+    return list(qs.values())
+
+@sync_to_async
+def db_get_chat_history(session_id: int):
+    qs = ChatMessage.objects.filter(session_id=session_id).order_by("timestamp")
+    return list(qs.values())
+
+@sync_to_async
+def db_delete_chat_session(session_id: int):
+    deleted, _ = ChatSession.objects.filter(id=session_id).delete()
+    return deleted > 0
+
+@sync_to_async
+def db_update_chat_title(session_id: int, title: str):
+    ChatSession.objects.filter(id=session_id).update(title=title)
+    return True

@@ -98,8 +98,8 @@ export default function Dashboard() {
     };
 
     const handleUpdateKeys = async () => {
-        if (!groqKey && !geminiKey) {
-            toast.error("Please enter at least one API key.");
+        if (!groqKey) {
+            toast.error("Please enter the Groq API key.");
             return;
         }
 
@@ -109,20 +109,19 @@ export default function Dashboard() {
 
         try {
             const res = await axios.post(`${API_BASE}/config/api-keys`, {
-                groq_api_key: groqKey,
-                gemini_api_key: geminiKey
+                groq_api_key: groqKey
             }, { headers });
 
             if (res.data.status === 'success') {
                 toast.success("AI Protocols Updated Successfully", { id: toastId });
                 setGroqKey('');
-                setGeminiKey('');
                 setShowSettings(false);
             } else {
-                toast.error(res.data.message, { id: toastId });
+                toast.error(res.data.message || "Update failed", { id: toastId });
             }
         } catch (e: any) {
-            toast.error("Protocol update failed. Verify authentication.", { id: toastId });
+            const msg = e.response?.data?.message || e.message || "Protocol update failed.";
+            toast.error(msg, { id: toastId });
         }
     };
 
@@ -602,23 +601,13 @@ export default function Dashboard() {
 
                             <div className="space-y-6 mb-10">
                                 <div className="space-y-2">
-                                    <label className="text-[10px] font-black text-cyan-500 uppercase tracking-widest ml-1">Groq API Key (URL Brain)</label>
+                                    <label className="text-[10px] font-black text-cyan-500 uppercase tracking-widest ml-1">Groq API Key (Master Brain)</label>
                                     <input 
                                         type="password"
                                         value={groqKey}
                                         onChange={(e) => setGroqKey(e.target.value)}
                                         placeholder="gsk_..."
                                         className="w-full bg-[var(--sidebar-bg)] border border-[var(--border-color)] rounded-2xl p-4 text-xs font-bold focus:outline-none focus:border-cyan-500 transition-all"
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <label className="text-[10px] font-black text-blue-500 uppercase tracking-widest ml-1">Gemini API Key (File Brain)</label>
-                                    <input 
-                                        type="password"
-                                        value={geminiKey}
-                                        onChange={(e) => setGeminiKey(e.target.value)}
-                                        placeholder="AIza..."
-                                        className="w-full bg-[var(--sidebar-bg)] border border-[var(--border-color)] rounded-2xl p-4 text-xs font-bold focus:outline-none focus:border-blue-500 transition-all"
                                     />
                                 </div>
                             </div>
@@ -643,22 +632,15 @@ export default function Dashboard() {
             </AnimatePresence>
 
             {/* Sidebar */}
-            <motion.aside
-                initial={false}
-                animate={{ x: sidebarOpen ? 0 : -280, width: sidebarOpen ? 280 : 0, opacity: sidebarOpen ? 1 : 0 }}
-                className={`fixed lg:relative z-40 h-full flex flex-col border-r border-[var(--border-color)] bg-[var(--sidebar-bg)] backdrop-blur-2xl transition-all duration-300 ease-in-out ${!sidebarOpen && 'lg:w-0'}`}
+            <aside
+                className="hidden lg:flex w-[280px] h-full flex-col border-r border-[var(--border-color)] bg-[var(--sidebar-bg)] backdrop-blur-2xl"
             >
-                <div className="p-6 flex items-center justify-between border-b border-[var(--border-color)]">
-                    <div className="flex items-center gap-3">
-                        <Logo size={32} className="scale-125" />
-                        <div className="flex flex-col">
-                            <span className="font-black text-xs tracking-tight text-[var(--foreground)] italic uppercase leading-none">TALENTPULSE</span>
-                            <span className="text-[9px] font-bold text-cyan-500/60 uppercase tracking-widest mt-1">AI Protocol</span>
-                        </div>
+                <div className="p-6 flex items-center gap-3 border-b border-[var(--border-color)]">
+                    <Logo size={32} className="scale-125" />
+                    <div className="flex flex-col">
+                        <span className="font-black text-xs tracking-tight text-[var(--foreground)] italic uppercase leading-none">TALENTPULSE</span>
+                        <span className="text-[9px] font-bold text-cyan-500/60 uppercase tracking-widest mt-1">AI Protocol</span>
                     </div>
-                    <button onClick={() => setSidebarOpen(false)} className="lg:hidden p-1.5 hover:bg-[var(--border-color)] rounded-lg text-[var(--text-muted)]">
-                        <X size={18} />
-                    </button>
                 </div>
 
                 <div className="p-4 space-y-3">
@@ -734,18 +716,13 @@ export default function Dashboard() {
                         <X size={14} /> System Exit
                     </button>
                 </div>
-            </motion.aside>
+            </aside>
 
             {/* Main content */}
             <div className="flex-1 flex flex-col relative min-w-0 bg-[var(--background)]">
                 {/* Header */}
                 <header className="h-16 border-b border-[var(--border-color)] flex items-center justify-between px-6 lg:px-10 bg-[var(--background)]/60 backdrop-blur-xl z-20 sticky top-0">
                     <div className="flex items-center gap-4">
-                        {!sidebarOpen && (
-                            <button onClick={() => setSidebarOpen(true)} className="p-2.5 rounded-xl bg-[var(--card-bg)] border border-[var(--border-color)] text-[var(--text-muted)] hover:text-cyan-500 transition-all shadow-sm">
-                                <Menu size={20} />
-                            </button>
-                        )}
                         <div className="flex items-center gap-2">
                             <span className="text-xs font-black tracking-tight italic opacity-80 uppercase">Intelligence Protocol</span>
                             <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.6)]" />

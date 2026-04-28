@@ -1,21 +1,20 @@
 import os
 import json
 import re
-from google import genai
-from google.genai import types
+from groq import Groq
+from core.document_processor import process_file_bytes
 
 # -----------------------------------------------------------------------------
 # 🔐 API Key – Loaded from Environment (.env)
 # -----------------------------------------------------------------------------
-API_KEY = os.getenv("GEMINI_API_KEY")
-
-client = genai.Client(api_key=API_KEY)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 def update_resume_keys():
-    global client, API_KEY
-    API_KEY = os.getenv("GEMINI_API_KEY")
-    client = genai.Client(api_key=API_KEY)
-    print("📄 Resume Service Hot-Reloaded with new Gemini Key.")
+    global client, GROQ_API_KEY
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+    client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+    print("📄 Resume Service Hot-Reloaded with new Groq Key.")
 
 # -----------------------------------------------------------------------------
 # 📋 Extraction Prompt
@@ -68,64 +67,41 @@ Return ONLY the JSON, no extra text, no markdown formatting.
 # -----------------------------------------------------------------------------
 async def extract_resume_data(file_bytes: bytes, filename: str):
     """
-    Calls Gemini API to extract JSON from resume bytes.
+    Uses local text extraction then calls Groq to parse JSON.
     """
-    # Determine MIME type
-    mime_type = "application/pdf"
-    lower_path = filename.lower()
-    if lower_path.endswith((".jpg", ".jpeg")):
-        mime_type = "image/jpeg"
-    elif lower_path.endswith(".png"):
-        mime_type = "image/png"
+    if not client:
+        return {"error": "Groq API key missing"}
 
     try:
-        # Using gemini-2.5-flash for high-accuracy resume extraction
-        response = client.models.generate_content(
-            model="gemini-2.5-flash", 
-            contents=[
-                types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
-                EXTRACT_PROMPT
-            ]
-        )
-        
-        if not response or not response.text:
-            print("❌ Gemini API returned an empty response.")
+        # 1. Local Text Extraction (No AI needed for raw text)
+        chunks = process_file_bytes(file_bytes, filename)
+        full_text = "\n".join(chunks)
+
+        if not full_text.strip():
+            print("❌ No text could be extracted from file.")
             return None
 
-        raw = response.text.strip()
-        # Clean markdown formatting if present
-        raw = re.sub(r"```json\s*", "", raw)
-        raw = re.sub(r"```\s*", "", raw)
+        # 2. Call Groq for JSON extraction
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a professional recruitment AI. Extract details from resume text into the requested JSON format."},
+                {"role": "user", "content": f"{EXTRACT_PROMPT}\n\nRESUME TEXT:\n{full_text[:6000]}"}
+            ],
+            response_format={"type": "json_object"}
+        )
         
+        if not response or not response.choices:
+            print("❌ Groq API returned an empty response.")
+            return None
+
+        raw = response.choices[0].message.content.strip()
         data = json.loads(raw)
         return data
         
     except Exception as e:
-        error_msg = str(e)
-        print(f"⚠️ Gemini 2.0 Error: {error_msg}")
-        
-        # Aggressive Fallback: Try 1.5-flash-latest for ANY error (Quota 429, 404, etc.)
-        print("🔄 Attempting automatic fallback to gemini-1.5-flash-latest...")
-        try:
-            response = client.models.generate_content(
-                model="gemini-1.5-flash-latest", 
-                contents=[
-                    types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
-                    EXTRACT_PROMPT
-                ]
-            )
-            
-            if not response or not response.text:
-                return {"error": "Gemini 1.5 also returned an empty response."}
-
-            raw = response.text.strip()
-            raw = re.sub(r"```json\s*", "", raw)
-            raw = re.sub(r"```\s*", "", raw)
-            return json.loads(raw)
-            
-        except Exception as e2:
-            print(f"❌ Critical Failure: Both models failed. Error: {str(e2)}")
-            return {"error": f"Quota Exhausted or API Error. (Details: {str(e2)})"}
+        print(f"⚠️ Groq Extraction Error: {str(e)}")
+        return {"error": f"Groq Extraction Error: {str(e)}"}
 
 def format_resume_details(data: dict):
     """

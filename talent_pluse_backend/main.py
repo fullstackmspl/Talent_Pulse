@@ -107,7 +107,13 @@ from core.db_service import (
     db_get_all_candidates,
     db_get_all_tickets,
     db_get_all_reminders,
-    db_create_candidate, # ADD THIS
+    db_create_chat_session,
+    db_get_chat_session,
+    db_update_chat_source,
+    db_add_chat_message,
+    db_get_user_chats,
+    db_get_chat_history,
+    db_delete_chat_session
 )
 
 from core.resume_service import extract_resume_data, format_resume_details
@@ -195,11 +201,8 @@ class LoginRequest(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    query: str = Field(
-        ...,
-        min_length=1,
-        max_length=5000
-    )
+    query: str = Field(..., min_length=1)
+    session_id: int = Field(default=0)
 
 
 class UrlRequest(BaseModel):
@@ -218,7 +221,6 @@ class PublicLeadRequest(BaseModel):
 
 class ConfigUpdateRequest(BaseModel):
     groq_api_key: str = Field(default="")
-    gemini_api_key: str = Field(default="")
 
 
 # ---------------------------------------------------
@@ -411,7 +413,20 @@ async def upload_resume(
     }
     
     try:
-        new_candidate = await db_create_candidate(candidate_data)
+        from core.db_service import db_get_candidate_by_email, db_update_candidate
+        
+        # Check for existing candidate
+        email = candidate_data["email"]
+        existing = await db_get_candidate_by_email(email)
+        
+        if existing:
+            # Update existing candidate instead of creating new
+            new_candidate = await db_update_candidate(existing["id"], candidate_data)
+            status_msg = f"Resume updated for existing candidate #{new_candidate['id']} ({new_candidate['name']})."
+        else:
+            # Create new candidate
+            new_candidate = await db_create_candidate(candidate_data)
+            status_msg = f"Resume parsed and candidate #{new_candidate['id']} created."
         
         # 3. Email Notification
         email_payload = {
@@ -427,7 +442,7 @@ async def upload_resume(
         await notify("RESUME_PARSED", email_payload, "webhook/new-resume")
         
         return ok(
-            f"Resume parsed and candidate #{new_candidate['id']} created.",
+            f"✅ {status_msg}!\n\nYou can now ask me questions about this resume (e.g., 'What are the key skills?' or 'What is their education?').",
             {
                 "candidate": new_candidate,
                 "extracted": extracted_data
@@ -461,46 +476,96 @@ async def process_link(
     )
 
 
-# ---------------------------------------------------
-# Chat
-# ---------------------------------------------------
 @api_router.post("/chat")
 async def chat(
     body: ChatRequest,
     user=Depends(verify_token)
 ):
-    # Use user email as the session ID for stateful conversations
-    session_id = user.get("sub", "default")
+    # 1. Ensure session exists and get context
+    chat_session_id = body.session_id
+    active_source = None
+    
+    if chat_session_id == 0:
+        new_sess = await db_create_chat_session(user["sub"], title=body.query[:30] + "...")
+        chat_session_id = new_sess["id"]
+    else:
+        # Get active source from DB
+        sess = await db_get_chat_session(chat_session_id)
+        if sess:
+            active_source = sess.get("active_source")
 
-    # 1. Attempt intent detection and routing
+    # Save user message
+    await db_add_chat_message(chat_session_id, "user", body.query)
+
+    # 2. Attempt intent detection and routing
+    session_id_str = user.get("sub", "default")
     try:
         intent, conf = predict_intent_with_confidence(body.query)
-        route_data = await route_intent(intent, body.query, session_id=session_id)
+        route_data = await route_intent(intent, body.query, session_id=session_id_str)
         
         if route_data:
+            ai_resp = route_data.get("message", "Action completed.")
+            await db_add_chat_message(chat_session_id, "ai", ai_resp)
+            
+            # Reset context lock if it's a direct DB action (Topic Change)
+            if active_source:
+                await db_update_chat_source(chat_session_id, None)
+
             return {
-                "response": route_data.get("message", "Action completed."),
+                "response": ai_resp,
                 "data": route_data.get("data", None),
-                "options": route_data.get("options", []), # ADD THIS LINE
+                "options": route_data.get("options", []),
                 "intent": intent,
                 "confidence": conf,
-                "source": "database/action"
+                "source": "database/action",
+                "session_id": chat_session_id
             }
     except Exception as e:
         print(f"Intent detection or routing failed: {e}")
-        # Fallback to RAG if intent model is missing or router fails
 
-    # 2. Fallback to RAG
-    result = await ask_rag(
-        body.query
-    )
+    # 3. Fallback to RAG with Context Lock
+    result = await ask_rag(body.query, active_source=active_source)
+    ai_resp = result["answer"]
+    
+    # 4. Update Context Lock if a source was used
+    if result.get("sources") and len(result["sources"]) > 0:
+        # Extract source name
+        new_source = result["sources"][0]
+        if new_source != active_source:
+            await db_update_chat_source(chat_session_id, new_source)
+
+    # Save AI message
+    await db_add_chat_message(chat_session_id, "ai", ai_resp)
 
     return {
-        "response": result["answer"],
+        "response": ai_resp,
         "sources": result["sources"],
-        "model": GEMINI_MODEL,
-        "source": "rag"
+        "model": "Groq (Llama-3)",
+        "source": "rag",
+        "session_id": chat_session_id,
+        "active_source": active_source
     }
+
+
+# ---------------------------------------------------
+# Chat Session Management
+# ---------------------------------------------------
+@api_router.get("/chats")
+async def get_chats(user=Depends(verify_token)):
+    chats = await db_get_user_chats(user["sub"])
+    return ok("Chats fetched", chats)
+
+
+@api_router.get("/chats/{session_id}/messages")
+async def get_messages(session_id: int, user=Depends(verify_token)):
+    messages = await db_get_chat_history(session_id)
+    return ok("Messages fetched", messages)
+
+
+@api_router.delete("/chats/{session_id}")
+async def delete_chat(session_id: int, user=Depends(verify_token)):
+    await db_delete_chat_session(session_id)
+    return ok("Chat deleted")
 
 
 # ---------------------------------------------------
@@ -548,7 +613,6 @@ async def update_api_keys(body: ConfigUpdateRequest, user=Depends(verify_token))
         
         new_lines = []
         groq_found = False
-        gemini_found = False
         
         for line in lines:
             if line.startswith("GROQ_API_KEY="):
@@ -557,28 +621,18 @@ async def update_api_keys(body: ConfigUpdateRequest, user=Depends(verify_token))
                     groq_found = True
                 else:
                     new_lines.append(line)
-            elif line.startswith("GEMINI_API_KEY="):
-                if body.gemini_api_key:
-                    new_lines.append(f"GEMINI_API_KEY={body.gemini_api_key}\n")
-                    gemini_found = True
-                else:
-                    new_lines.append(line)
             else:
                 new_lines.append(line)
         
         if not groq_found and body.groq_api_key:
             new_lines.append(f"GROQ_API_KEY={body.groq_api_key}\n")
-        if not gemini_found and body.gemini_api_key:
-            new_lines.append(f"GEMINI_API_KEY={body.gemini_api_key}\n")
             
         with open(env_path, "w") as f:
             f.writelines(new_lines)
             
         # 2. Reload in-memory
         if body.groq_api_key:
-            os.environ["GROQ_API_KEY(URL)"] = body.groq_api_key
-        if body.gemini_api_key:
-            os.environ["GEMINI_API_KEY(DOCUMENT)"] = body.gemini_api_key
+            os.environ["GROQ_API_KEY"] = body.groq_api_key
             
         update_rag_keys()
         update_resume_keys()

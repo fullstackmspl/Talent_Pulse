@@ -175,3 +175,26 @@ class Reminder(models.Model):
 
     def __str__(self):
         return self.title
+
+# --------------------------------------------------
+# Chat Persistence
+# --------------------------------------------------
+class ChatSession(models.Model):
+    user_email = models.CharField(max_length=255)
+    title = models.CharField(max_length=255, default="New Conversation")
+    active_source = models.CharField(max_length=255, blank=True, null=True) # Sticky Context
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.title} ({self.user_email})"
+
+
+class ChatMessage(models.Model):
+    session = models.ForeignKey(ChatSession, on_delete=models.CASCADE, related_name="messages")
+    role = models.CharField(max_length=20) # 'user' or 'ai'
+    content = models.TextField()
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.role}: {self.content[:50]}"
