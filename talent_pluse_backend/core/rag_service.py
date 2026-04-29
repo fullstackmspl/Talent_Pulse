@@ -235,6 +235,19 @@ async def ask_rag(query: str, active_source: str = None, api_key: str = None):
     # If we have an active source, we perform a strict search ONLY on that source
     if active_source:
         matches = search_chunks(query, top_k=10, source_filter=active_source)
+        
+        # Auto-Context Switch: Always check if there's a significantly better match globally.
+        # This handles cases where the user asks about a new topic/file but context is locked.
+        global_matches = search_chunks(query, top_k=5)
+        
+        if global_matches:
+            best_global = global_matches[0]["score"]
+            best_local = matches[0]["score"] if matches else 0
+            
+            # Switch if the global match is better by a small margin (difference > 0.05)
+            # or if the local match is relatively weak (< 0.45)
+            if best_global > best_local + 0.05 or best_local < 0.45:
+                matches = global_matches
     else:
         matches = search_chunks(query, top_k=5)
 
